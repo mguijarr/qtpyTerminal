@@ -7,7 +7,9 @@ qtpyTerminal is a QWidget derived from QPlainTextEdit, which can execute an inte
 command to run in the default shell (`SHELL` environment variable). The shell process
 is forked, and input/output is redirected to the Qt widget. It is then possible to
 interact with the program, as in a VT100 terminal thanks to the use of Pyte for
-escape codes interpretation (see ).
+escape codes interpretation (see https://github.com/selectel/pyte).
+
+https://github.com/user-attachments/assets/03e76620-f880-453b-9539-939c006c0caf
 
 # Installation
 
@@ -73,3 +75,5 @@ respectively.
 # Contributing
 
 Contributions are welcome. Please submit merge requests. 
+
+

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qtpyTerminal"
+version = "0.1"
+description = "qtpyTerminal - Python Qt VT100 widget"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "qtpy~=2.4",
+    "pyte",
+]
+
+[tool.setuptools.packages]
+find = { where = ["src"] }
+
+[project.optional-dependencies]
+pyqt6 = ["PyQt6>=6.7", "PyQt6-WebEngine>=6.7"]
+pyside6 = ["PySide6>=6.7"]
+
+[tool.black]
+line-length = 100
+skip-magic-trailing-comma = true
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+include_trailing_comma = true
+

@@ -16,11 +16,9 @@ https://github.com/user-attachments/assets/03e76620-f880-453b-9539-939c006c0caf
 qtpyTerminal only requires pyte and qtpy - it should run seamlessly with different
 Python Qt backends like PyQt or Pyside.
 
-Clone the repository, and from the source directory:
-
-`pip install .`
-
-(to have it installed in the current Python environment).
+```python
+pip install qtpyTerminal@git+https://github.com/mguijarr/qtpyTerminal.git
+```
 
 # Example
 

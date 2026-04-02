@@ -1,0 +1,14 @@
+[workspace]
+authors = ["Mathias Guijarro <m.guijarro@apco-technologies.eu>"]
+channels = ["conda-forge"]
+name = "qtpyterminal_workspace"
+platforms = ["win-64", "linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = ">=3.14.3,<3.15"
+pip = "*"
+black = ">=26.1.0,<27"
+pyqt6 = ">=6.8.1,<7"

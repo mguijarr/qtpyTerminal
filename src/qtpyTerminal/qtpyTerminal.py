@@ -1,16 +1,17 @@
 """
-qtpyTerminal is a Qt widget that runs a Bash shell. 
+qtpyTerminal is a Qt widget that runs a Bash shell.
 
 qtpyTerminal VT100 emulation is powered by Pyte,
 (https://github.com/selectel/pyte).
+
+Windows support uses pywinpty (pip install pywinpty).
+Unix support uses pty (built-in).
 """
 
 import collections
-import fcntl
 import functools
 import html
 import os
-import pty
 import signal
 import sys
 
@@ -18,15 +19,30 @@ import pyte
 from pyte.screens import History
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Property as pyqtProperty
-from qtpy.QtCore import QSize, QSocketNotifier, Qt, QTimer
+from qtpy.QtCore import QSize, Qt, QTimer
 from qtpy.QtCore import Signal as pyqtSignal, Slot as pyqtSlot
 from qtpy.QtGui import QClipboard, QColor, QPalette, QTextCursor
 from qtpy.QtWidgets import QApplication, QHBoxLayout, QScrollBar, QSizePolicy
 
+IS_WINDOWS = sys.platform == "win32"
+
+try:
+    import fcntl
+    import pty
+    from qtpy.QtCore import QSocketNotifier
+
+    _HAVE_PTY = True
+except ImportError:
+    _HAVE_PTY = False
+
+if not _HAVE_PTY:
+    import threading
+    from winpty import PtyProcess  # pip install pywinpty  (imports as 'winpty')
+
 
 def SafeSlot(*slot_args, **slot_kwargs):  # pylint: disable=invalid-name
-    """Function with args, acting like a decorator, to display errors instead of raising an exception
-    """
+    """Function with args, acting like a decorator, to display errors instead of raising an exception"""
+
     def error_managed(method):
         @pyqtSlot(*slot_args, **slot_kwargs)
         @functools.wraps(method)
@@ -70,12 +86,12 @@ control_keys_mapping = {
     QtCore.Qt.Key_G: b"\x07",  # Ctrl-G (Bell)
     QtCore.Qt.Key_H: b"\x08",  # Ctrl-H (Backspace)
     QtCore.Qt.Key_I: b"\x09",  # Ctrl-I (Tab)
-    QtCore.Qt.Key_J: b"\x0A",  # Ctrl-J (Line Feed)
-    QtCore.Qt.Key_K: b"\x0B",  # Ctrl-K (Vertical Tab)
-    QtCore.Qt.Key_L: b"\x0C",  # Ctrl-L (Form Feed)
-    QtCore.Qt.Key_M: b"\x0D",  # Ctrl-M (Carriage Return)
-    QtCore.Qt.Key_N: b"\x0E",  # Ctrl-N
-    QtCore.Qt.Key_O: b"\x0F",  # Ctrl-O
+    QtCore.Qt.Key_J: b"\x0a",  # Ctrl-J (Line Feed)
+    QtCore.Qt.Key_K: b"\x0b",  # Ctrl-K (Vertical Tab)
+    QtCore.Qt.Key_L: b"\x0c",  # Ctrl-L (Form Feed)
+    QtCore.Qt.Key_M: b"\x0d",  # Ctrl-M (Carriage Return)
+    QtCore.Qt.Key_N: b"\x0e",  # Ctrl-N
+    QtCore.Qt.Key_O: b"\x0f",  # Ctrl-O
     QtCore.Qt.Key_P: b"\x10",  # Ctrl-P
     QtCore.Qt.Key_Q: b"\x11",  # Ctrl-Q
     QtCore.Qt.Key_R: b"\x12",  # Ctrl-R
@@ -86,38 +102,69 @@ control_keys_mapping = {
     QtCore.Qt.Key_W: b"\x17",  # Ctrl-W
     QtCore.Qt.Key_X: b"\x18",  # Ctrl-X
     QtCore.Qt.Key_Y: b"\x19",  # Ctrl-Y
-    QtCore.Qt.Key_Z: b"\x1A",  # Ctrl-Z
-    QtCore.Qt.Key_Escape: b"\x1B",  # Ctrl-Escape
-    QtCore.Qt.Key_Backslash: b"\x1C",  # Ctrl-\
-    QtCore.Qt.Key_Underscore: b"\x1F",  # Ctrl-_
+    QtCore.Qt.Key_Z: b"\x1a",  # Ctrl-Z
+    QtCore.Qt.Key_Escape: b"\x1b",  # Ctrl-Escape
+    QtCore.Qt.Key_Backslash: b"\x1c",  # Ctrl-\
+    QtCore.Qt.Key_Underscore: b"\x1f",  # Ctrl-_
 }
 
-normal_keys_mapping = {
-    QtCore.Qt.Key_Return: b"\n",
+normal_keys_mapping_unix = {
+    QtCore.Qt.Key_Return: b"\r",
     QtCore.Qt.Key_Space: b" ",
-    QtCore.Qt.Key_Enter: b"\n",
+    QtCore.Qt.Key_Enter: b"\r",
+    QtCore.Qt.Key_Tab: b"\t",
+    QtCore.Qt.Key_Backspace: b"\x7f",
+    QtCore.Qt.Key_Delete: b"\x1b[3~",
+    QtCore.Qt.Key_Home: b"\x1b[H",
+    QtCore.Qt.Key_End: b"\x1b[F",
+    QtCore.Qt.Key_Left: b"\x1b[D",
+    QtCore.Qt.Key_Up: b"\x1b[A",
+    QtCore.Qt.Key_Right: b"\x1b[C",
+    QtCore.Qt.Key_Down: b"\x1b[B",
+    QtCore.Qt.Key_PageUp: b"\x1b[5~",
+    QtCore.Qt.Key_PageDown: b"\x1b[6~",
+    QtCore.Qt.Key_F1: b"\x1bOP",
+    QtCore.Qt.Key_F2: b"\x1bOQ",
+    QtCore.Qt.Key_F3: b"\x1bOR",
+    QtCore.Qt.Key_F4: b"\x1bOS",
+    QtCore.Qt.Key_F5: b"\x1b[15~",
+    QtCore.Qt.Key_F6: b"\x1b[17~",
+    QtCore.Qt.Key_F7: b"\x1b[18~",
+    QtCore.Qt.Key_F8: b"\x1b[19~",
+    QtCore.Qt.Key_F9: b"\x1b[20~",
+    QtCore.Qt.Key_F10: b"\x1b[21~",
+    QtCore.Qt.Key_F11: b"\x1b[23~",
+    QtCore.Qt.Key_F12: b"\x1b[24~",
+}
+
+# Windows cmd.exe / ConPTY expects CR for Enter, standard VT sequences for navigation
+normal_keys_mapping_windows = {
+    QtCore.Qt.Key_Return: b"\r",
+    QtCore.Qt.Key_Space: b" ",
+    QtCore.Qt.Key_Enter: b"\r",
     QtCore.Qt.Key_Tab: b"\t",
     QtCore.Qt.Key_Backspace: b"\x08",
-    QtCore.Qt.Key_Home: b"\x47",
-    QtCore.Qt.Key_End: b"\x4f",
-    QtCore.Qt.Key_Left: b"\x02",
-    QtCore.Qt.Key_Up: b"\x10",
-    QtCore.Qt.Key_Right: b"\x06",
-    QtCore.Qt.Key_Down: b"\x0E",
-    QtCore.Qt.Key_PageUp: b"\x49",
-    QtCore.Qt.Key_PageDown: b"\x51",
-    QtCore.Qt.Key_F1: b"\x1b\x31",
-    QtCore.Qt.Key_F2: b"\x1b\x32",
-    QtCore.Qt.Key_F3: b"\x1b\x33",
-    QtCore.Qt.Key_F4: b"\x1b\x34",
-    QtCore.Qt.Key_F5: b"\x1b\x35",
-    QtCore.Qt.Key_F6: b"\x1b\x36",
-    QtCore.Qt.Key_F7: b"\x1b\x37",
-    QtCore.Qt.Key_F8: b"\x1b\x38",
-    QtCore.Qt.Key_F9: b"\x1b\x39",
-    QtCore.Qt.Key_F10: b"\x1b\x30",
-    QtCore.Qt.Key_F11: b"\x45",
-    QtCore.Qt.Key_F12: b"\x46",
+    QtCore.Qt.Key_Delete: b"\x1b[3~",
+    QtCore.Qt.Key_Home: b"\x1b[H",
+    QtCore.Qt.Key_End: b"\x1b[F",
+    QtCore.Qt.Key_Left: b"\x1b[D",
+    QtCore.Qt.Key_Up: b"\x1b[A",
+    QtCore.Qt.Key_Right: b"\x1b[C",
+    QtCore.Qt.Key_Down: b"\x1b[B",
+    QtCore.Qt.Key_PageUp: b"\x1b[5~",
+    QtCore.Qt.Key_PageDown: b"\x1b[6~",
+    QtCore.Qt.Key_F1: b"\x1bOP",
+    QtCore.Qt.Key_F2: b"\x1bOQ",
+    QtCore.Qt.Key_F3: b"\x1bOR",
+    QtCore.Qt.Key_F4: b"\x1bOS",
+    QtCore.Qt.Key_F5: b"\x1b[15~",
+    QtCore.Qt.Key_F6: b"\x1b[17~",
+    QtCore.Qt.Key_F7: b"\x1b[18~",
+    QtCore.Qt.Key_F8: b"\x1b[19~",
+    QtCore.Qt.Key_F9: b"\x1b[20~",
+    QtCore.Qt.Key_F10: b"\x1b[21~",
+    QtCore.Qt.Key_F11: b"\x1b[23~",
+    QtCore.Qt.Key_F12: b"\x1b[24~",
 }
 
 
@@ -127,6 +174,8 @@ def QtKeyToAscii(event):
     the terminal. This works fine for standard alphanumerical characters, but
     most other characters require terminal specific control sequences.
     """
+    normal_keys_mapping = normal_keys_mapping_unix if _HAVE_PTY else normal_keys_mapping_windows
+
     if sys.platform == "darwin":
         # special case for MacOS
         # /!\ Qt maps ControlModifier to CMD
@@ -153,16 +202,18 @@ def QtKeyToAscii(event):
 
 
 class Screen(pyte.HistoryScreen):
-    def __init__(self, stdin_fd, cols, rows, historyLength):
+    def __init__(self, write_fn, cols, rows, historyLength):
+        """
+        Args:
+            write_fn: callable(data: str) used to respond to CPR/device requests.
+        """
         super().__init__(cols, rows, historyLength, ratio=1 / rows)
-        self._fd = stdin_fd
+        self._write_fn = write_fn
 
     def write_process_input(self, data):
-        """Response to CPR request (for example),
-        this can be for other requests
-        """
+        """Response to CPR request (for example)."""
         try:
-            os.write(self._fd, data.encode("utf-8"))
+            self._write_fn(data.encode("utf-8"))
         except (IOError, OSError):
             pass
 
@@ -181,7 +232,7 @@ class Screen(pyte.HistoryScreen):
             if lines <= self.cursor.y:
                 nlines_to_move_up = self.lines - lines
                 for i in range(nlines_to_move_up):
-                    line = self.buffer[i]  # .pop(0)
+                    line = self.buffer[i]
                     self.history.top.append(line)
                 self.cursor_position(0, 0)
                 self.delete_lines(nlines_to_move_up)
@@ -201,55 +252,140 @@ class Screen(pyte.HistoryScreen):
         self.set_margins()
 
 
-class Backend(QtCore.QObject):
-    """
-    This class will run as a qsocketnotifier (started in ``_TerminalWidget``) and poll the
-    file descriptor of the underlying executed program.
+# ---------------------------------------------------------------------------
+# Platform-specific backends
+# ---------------------------------------------------------------------------
+
+if _HAVE_PTY:
+
+    class _UnixBackend(QtCore.QObject):
+        """Backend for Unix/macOS using pty + QSocketNotifier."""
+
+        dataReady = pyqtSignal(object)
+        processExited = pyqtSignal()
+
+        def __init__(self, fd, cols, rows):
+            super().__init__()
+            self.fd = fd
+            self.screen = Screen(lambda data: os.write(fd, data), cols, rows, 10000)
+            self.stream = pyte.ByteStream()
+            self.stream.attach(self.screen)
+
+            self.notifier = QSocketNotifier(fd, QSocketNotifier.Read)
+            self.notifier.activated.connect(self._fd_readable)
+
+        def _fd_readable(self):
+            try:
+                out = os.read(self.fd, 2**16)
+            except OSError:
+                self.processExited.emit()
+                self.notifier.setEnabled(False)
+                return
+            self.stream.feed(out)
+            self.dataReady.emit(self.screen)
+
+        def write(self, data: bytes):
+            os.write(self.fd, data)
+
+        def resize(self, rows, cols):
+            self.screen.resize(rows, cols)
+
+        def close(self):
+            self.notifier.setEnabled(False)
+
+
+class _WindowsBackend(QtCore.QObject):
+    """Backend for Windows using pywinpty.
+
+    pywinpty exposes a WinPTY/ConPTY handle.  Since Windows has no
+    select()-able file descriptor for the PTY output pipe, we read from a
+    background thread and post the data back to the Qt main thread via a
+    queued signal.
     """
 
-    # Signals to communicate with ``_TerminalWidget``.
     dataReady = pyqtSignal(object)
     processExited = pyqtSignal()
 
-    def __init__(self, fd, cols, rows):
+    def __init__(self, pty_process, cols, rows):
         super().__init__()
+        self._pty = pty_process  # winpty.PtyProcess instance
 
-        # File descriptor that connects to the process.
-        self.fd = fd
-
-        self.screen = Screen(self.fd, cols, rows, 10000)
+        self.screen = Screen(self._write_raw, cols, rows, 10000)
         self.stream = pyte.ByteStream()
         self.stream.attach(self.screen)
 
-        self.notifier = QSocketNotifier(fd, QSocketNotifier.Read)
-        self.notifier.activated.connect(self._fd_readable)
+        self._running = True
+        self._thread = threading.Thread(target=self._reader_thread, daemon=True)
+        self._thread.start()
 
-    def _fd_readable(self):
-        """
-        Poll the Bash output, run it through Pyte, and notify
-        """
-        # Read the shell output until the file descriptor is closed.
+    def _write_raw(self, data: bytes):
         try:
-            out = os.read(self.fd, 2**16)
-        except OSError:
-            self.processExited.emit()
-            self.notifier.setEnabled(False)
-            return
+            self._pty.write(data.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
 
-        # Feed output into Pyte's state machine and send the new screen
-        # output to the GUI
-        self.stream.feed(out)
+    def _reader_thread(self):
+        """Run in background thread: read PTY output and emit signal."""
+        while self._running:
+            try:
+                # winpty returns str; encode back to bytes for pyte
+                chunk = self._pty.read(65536)
+                if chunk:
+                    self._on_data(chunk.encode("utf-8", errors="replace"))
+                elif not self._pty.isalive():
+                    self.processExited.emit()
+                    break
+            except Exception:
+                self.processExited.emit()
+                break
+
+    def _on_data(self, data: bytes):
+        """Called from background thread — post to main thread via signal."""
+        # We need to feed pyte and emit from the main thread.
+        # Use a QTimer with 0 delay to bounce back to the Qt event loop.
+        QtCore.QMetaObject.invokeMethod(
+            self, "_process_data", QtCore.Qt.QueuedConnection, QtCore.Q_ARG(object, data)
+        )
+
+    @pyqtSlot(object)
+    def _process_data(self, data: bytes):
+        self.stream.feed(data)
         self.dataReady.emit(self.screen)
+
+    def write(self, data: bytes):
+        try:
+            self._pty.write(data.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+
+    def resize(self, rows, cols):
+        self.screen.resize(rows, cols)
+        try:
+            self._pty.setwinsize(rows, cols)
+        except Exception:
+            pass
+
+    def close(self):
+        self._running = False
+        try:
+            self._pty.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Public container widget
+# ---------------------------------------------------------------------------
 
 
 class qtpyTerminal(QtWidgets.QWidget):
-    """Container widget for the terminal text area"""
+    """Container widget for the terminal text area."""
+
     def __init__(self, parent=None, cols=132):
         super().__init__(parent)
 
         self.term = _TerminalWidget(self, cols, rows=25)
         self.scroll_bar = QScrollBar(Qt.Vertical, self)
-        # self.scroll_bar.hide()
         layout = QHBoxLayout(self)
         layout.addWidget(self.term)
         layout.addWidget(self.scroll_bar)
@@ -261,7 +397,7 @@ class qtpyTerminal(QtWidgets.QWidget):
         self.set_bgcolor(pal.window().color())
         self.set_fgcolor(pal.windowText().color())
         self.term.set_scroll_bar(self.scroll_bar)
-        self.set_cmd("") # will execute the default shell
+        self.set_cmd("")  # will execute the default shell
 
     def minimumSizeHint(self):
         size = self.term.sizeHint()
@@ -304,10 +440,12 @@ class qtpyTerminal(QtWidgets.QWidget):
 
     def set_cmd(self, cmd):
         if not cmd:
-            cmd = os.environ["SHELL"]
+            if _HAVE_PTY:
+                cmd = os.environ.get("SHELL", "/bin/sh")
+            else:
+                cmd = os.environ.get("COMSPEC", "cmd.exe")
         self.term._cmd = cmd
-        if self.term.fd is None:
-            # not started yet
+        if self.term.backend is None:
             self.term.clear()
             self.term.appendHtml(f"<h2>qtpyTerminal - {repr(cmd)}</h2>")
 
@@ -331,14 +469,17 @@ class qtpyTerminal(QtWidgets.QWidget):
     cmd = pyqtProperty(str, get_cmd, set_cmd)
 
 
+# ---------------------------------------------------------------------------
+# Internal terminal widget
+# ---------------------------------------------------------------------------
+
+
 class _TerminalWidget(QtWidgets.QPlainTextEdit):
-    """
-    Start ``Backend`` process and render Pyte output as text.
-    """
+    """Start the platform backend and render Pyte output as text."""
+
     def __init__(self, parent, cols=125, rows=50, **kwargs):
-        # file descriptor to communicate with the subprocess
-        self.fd = None
-        self.pid = None
+        self.fd = None  # Unix fd  (or truthy sentinel on Windows)
+        self.pid = None  # Unix pid (None on Windows)
         self.backend = None
         # command to execute
         self._cmd = ""
@@ -376,6 +517,10 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
         self.updateGeometry()
         self.update_stylesheet()
 
+    # ------------------------------------------------------------------
+    # Color properties
+    # ------------------------------------------------------------------
+
     @property
     def bg_color(self):
         return self._bg_color
@@ -398,6 +543,10 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
         self.setStyleSheet(
             f"QPlainTextEdit {{ border: 0; color: {self._fg_color}; background-color: {self._bg_color}; }} "
         )
+
+    # ------------------------------------------------------------------
+    # Size properties
+    # ------------------------------------------------------------------
 
     @property
     def rows(self):
@@ -427,26 +576,59 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
         else:
             raise RuntimeError("Cannot change cols after console is started.")
 
+    # ------------------------------------------------------------------
+    # Start / stop
+    # ------------------------------------------------------------------
+
     def stop(self):
-        if self.fd:
-            os.kill(self.pid, signal.SIGTERM)
-            os.waitpid(self.pid, os.WNOHANG)
+        if self.backend is None:
+            return
+        self.backend.close()
+        if _HAVE_PTY and self.pid:
+            try:
+                os.kill(self.pid, signal.SIGTERM)
+                os.waitpid(self.pid, os.WNOHANG)
+            except OSError:
+                pass
 
     def start(self, deactivate_ctrl_d: bool = False):
         self._deactivate_ctrl_d = deactivate_ctrl_d
-
         self.update_term_size()
 
-        # Start the process
-        self.fd, self.pid = self.fork_shell()
+        if _HAVE_PTY:
+            self._start_unix()
+        else:
+            self._start_windows()
 
+    def _start_unix(self):
+        self.fd, self.pid = self._fork_shell_unix()
         if self.fd:
-            # Create the ``Backend`` object
-            self.backend = Backend(self.fd, self.cols, self.rows)
+            self.backend = _UnixBackend(self.fd, self.cols, self.rows)
             self.backend.dataReady.connect(self.data_ready)
             self.backend.processExited.connect(self.process_exited)
         else:
             self.process_exited()
+
+    def _start_windows(self):
+        cmd = self._cmd
+        if isinstance(cmd, list):
+            cmd = " ".join(cmd)
+        try:
+            pty_proc = PtyProcess.spawn(
+                cmd, dimensions=(self.rows, self.cols), env=dict(os.environ, TERM="xterm-256color")
+            )
+        except Exception as exc:
+            self.appendHtml(f"<br><h2>Failed to start {repr(cmd)}: {html.escape(str(exc))}</h2>")
+            return
+        # Use a truthy sentinel so the fd-is-None guard still works
+        self.fd = True
+        self.backend = _WindowsBackend(pty_proc, self.cols, self.rows)
+        self.backend.dataReady.connect(self.data_ready)
+        self.backend.processExited.connect(self.process_exited)
+
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
 
     @SafeSlot()
     def process_exited(self):
@@ -465,17 +647,22 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
         self.adjust_scroll_bar()
         self.move_cursor()
 
+    # ------------------------------------------------------------------
+    # Sizing
+    # ------------------------------------------------------------------
+
     def minimumSizeHint(self):
-        """Return minimum size for current cols and rows"""
         fmt = QtGui.QFontMetrics(self.font())
         char_width = fmt.width("w")
         char_height = fmt.height()
-        width = char_width * self.cols
-        height = char_height * self.rows
-        return QSize(width, height)
+        return QSize(char_width * self.cols, char_height * self.rows)
 
     def sizeHint(self):
         return self.minimumSizeHint()
+
+    # ------------------------------------------------------------------
+    # Scroll bar
+    # ------------------------------------------------------------------
 
     def set_scroll_bar(self, scroll_bar):
         self.scroll_bar = scroll_bar
@@ -508,16 +695,17 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
         tmp = len(self.backend.screen.history.top) + len(self.backend.screen.history.bottom)
         sb.setMaximum(tmp if tmp > 0 else 0)
         sb.setSliderPosition(tmp if tmp > 0 else 0)
-        # if tmp > 0:
-        #    # show scrollbar, but delayed - prevent recursion with widget size change
-        #    QTimer.singleShot(0, scrollbar.show)
-        # else:
-        #    QTimer.singleShot(0, scrollbar.hide)
         sb.valueChanged.connect(self.scroll_value_change)
 
-    def write(self, data):
+    # ------------------------------------------------------------------
+    # I/O
+    # ------------------------------------------------------------------
+
+    def write(self, data: bytes):
+        if self.backend is None:
+            return
         try:
-            os.write(self.fd, data)
+            self.backend.write(data)
         except (IOError, OSError):
             self.process_exited()
 
@@ -547,11 +735,12 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
         elif code is not None:
             self.write(code)
 
-    def push(self, text):
-        """
-        Write 'text' to terminal
-        """
+    def push(self, text: str):
         self.write(text.encode("utf-8"))
+
+    # ------------------------------------------------------------------
+    # Context menu / clipboard
+    # ------------------------------------------------------------------
 
     def contextMenuEvent(self, event):
         if self.fd is None:
@@ -577,6 +766,10 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
     def _push_clipboard(self):
         clipboard = QApplication.instance().clipboard()
         self.push(clipboard.text())
+
+    # ------------------------------------------------------------------
+    # Cursor / mouse
+    # ------------------------------------------------------------------
 
     def move_cursor(self):
         textCursor = self.textCursor()
@@ -611,6 +804,10 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
                 return None
         return super().mouseReleaseEvent(event)
 
+    # ------------------------------------------------------------------
+    # Screen rendering
+    # ------------------------------------------------------------------
+
     def redraw_screen(self):
         """
         Render the screen as formatted text into the widget.
@@ -633,7 +830,12 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
                 for idx, ch in screen.buffer[line_no].items():
                     text += " " * (idx - old_idx - 1)
                     old_idx = idx
-                    style = f"{'background-color:%s;' % ansi_colors.get(ch.bg, ansi_colors['black']) if ch.bg!='default' else ''}{'color:%s;' % ansi_colors.get(ch.fg, ansi_colors['white']) if ch.fg!='default' else ''}{'font-weight:bold;' if ch.bold else ''}{'font-style:italic;' if ch.italics else ''}"
+                    style = (
+                        f"{'background-color:%s;' % ansi_colors.get(ch.bg, ansi_colors['black']) if ch.bg != 'default' else ''}"
+                        f"{'color:%s;' % ansi_colors.get(ch.fg, ansi_colors['white']) if ch.fg != 'default' else ''}"
+                        f"{'font-weight:bold;' if ch.bold else ''}"
+                        f"{'font-style:italic;' if ch.italics else ''}"
+                    )
                     if style != old_style:
                         if old_style:
                             line += f"<span style={repr(old_style)}>{html.escape(text, quote=True)}</span>"
@@ -661,6 +863,10 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
             # did updates, all clean
             screen.dirty.clear()
 
+    # ------------------------------------------------------------------
+    # Terminal resize
+    # ------------------------------------------------------------------
+
     def update_term_size(self):
         fmt = QtGui.QFontMetrics(self.font())
         char_width = fmt.width("w")
@@ -670,8 +876,8 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
 
     def resizeEvent(self, event):
         self.update_term_size()
-        if self.fd:
-            self.backend.screen.resize(self._rows, self._cols)
+        if self.fd and self.backend:
+            self.backend.resize(self._rows, self._cols)
             self.redraw_screen()
             self.adjust_scroll_bar()
             self.move_cursor()
@@ -686,14 +892,15 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
             self.backend.screen.next_page()
         self.redraw_screen()
 
-    def fork_shell(self):
-        """
-        Fork the current process and execute in shell.
-        """
+    # ------------------------------------------------------------------
+    # Unix-only: fork a shell
+    # ------------------------------------------------------------------
+
+    def _fork_shell_unix(self):
         try:
             pid, fd = pty.fork()
         except (IOError, OSError):
-            return False
+            return False, None
         if pid == 0:
             try:
                 ls = os.environ["LANG"].split(".")
@@ -706,7 +913,7 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
             os.putenv("TERM", "linux")
             os.putenv("LANG", ls[0] + ".UTF-8")
             if not self._cmd:
-                self._cmd = os.environ["SHELL"]
+                self._cmd = os.environ.get("SHELL", "/bin/sh")
             cmd = self._cmd
             if isinstance(cmd, str):
                 cmd = cmd.split()
@@ -716,28 +923,22 @@ class _TerminalWidget(QtWidgets.QPlainTextEdit):
                 pass
             os._exit(0)
         else:
-            # We are in the parent process.
-            # Set file control
             fcntl.fcntl(fd, fcntl.F_SETFL, os.O_NONBLOCK)
             return fd, pid
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    import os
-    import sys
-
-    from qtpy import QtGui, QtWidgets
-
-    # Create the Qt application and console.
     app = QtWidgets.QApplication([])
     mainwin = QtWidgets.QMainWindow()
-    title = "qtpyTerminal"
-    mainwin.setWindowTitle(title)
+    mainwin.setWindowTitle("qtpyTerminal")
 
     console = qtpyTerminal(mainwin)
     mainwin.setCentralWidget(console)
     console.start()
 
-    # Show widget and launch Qt's event loop.
     mainwin.show()
     sys.exit(app.exec_())

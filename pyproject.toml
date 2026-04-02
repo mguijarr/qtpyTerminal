@@ -15,6 +15,7 @@ classifiers = [
 dependencies = [
     "qtpy~=2.4",
     "pyte",
+    "pywinpty; sys_platform == 'win32'",
 ]
 
 [tool.setuptools.packages]

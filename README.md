@@ -1,5 +1,5 @@
 # qtpyTerminal
-A Vt100 terminal widget for qtpy (PyQt, Pyside)
+A Vt100 terminal widget for qtpy (PyQt, Pyside) - works on Linux, MacOS, Windows
 
 # About
 
